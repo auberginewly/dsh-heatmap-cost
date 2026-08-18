@@ -369,7 +369,11 @@ window.__ModuleLoader__.load({
 				]);
 			}
 
-			// 按 agent 预设消耗
+			// 按 Agent 数据源消耗
+			const AGENT_LABELS = {
+				'dsh': 'DSH', 'claude-code': 'Claude Code', 'codex': 'Codex',
+				'opencode': 'OpenCode', 'omp': 'OMP', 'omo': 'OMO', 'kimi': 'Kimi',
+			};
 			let agentsNode = null;
 			const agents = payload?.byAgent || [];
 			if (agents.length > 0) {
@@ -377,7 +381,7 @@ window.__ModuleLoader__.load({
 					react.createElement("div", { className: "dshhc_hm_title", key: "t" }, "按 Agent 消耗"),
 					...agents.map((a) => react.createElement("div", { className: "dshhc_agent_row", key: a.agent }, [
 						react.createElement("span", { className: "dshhc_agent_name", key: "n" }, [
-							react.createElement("span", { className: "dshhc_agent_badge", key: "b" }, a.agent),
+							react.createElement("span", { className: "dshhc_agent_badge", key: "b" }, AGENT_LABELS[a.agent] || a.agent),
 							react.createElement("span", { key: "s", style: { color: "var(--dsw-alias-label-tertiary)" } }, a.sessions + " 会话")
 						]),
 						react.createElement("span", { className: "dshhc_agent_vals", key: "v" }, [

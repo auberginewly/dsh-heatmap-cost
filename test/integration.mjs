@@ -70,7 +70,15 @@ injected.sessionProjections = {
   }),
 }
 
-plugin.apply(mockCtx, { currency: 'CNY', sessionsRoot: fxDir, ledgerFile: join(fxDir, 'ledger.json') })
+plugin.apply(mockCtx, {
+  currency: 'CNY',
+  sessionsRoot: fxDir,
+  ledgerFile: join(fxDir, 'ledger.json'),
+  claudeCodeEnabled: false,
+  codexEnabled: false,
+  opencodeEnabled: false,
+  ompEnabled: false,
+})
 
 // ── 断言挂载 ────────────────────────────────────────────────────────────────
 assert.equal(effects.length >= 1, true, 'effect 已注册(余额循环)')
@@ -118,13 +126,10 @@ assert.equal(parsed.totals.tokens, 4600, '账本总 token')
 assert.equal(parsed.totals.requests, 3, '账本总请求')
 assert.ok(parsed.totals.cost > 0, '账本总金额 > 0')
 assert.ok(Array.isArray(parsed.byAgent), 'byAgent 数组')
-assert.equal(parsed.byAgent.length, 2, '2 个 agent 预设')
-const liang = parsed.byAgent.find((a) => a.agent === 'liangshen')
-const std = parsed.byAgent.find((a) => a.agent === 'standard')
-assert.ok(liang && liang.sessions === 1 && liang.cost > 0 && liang.tokens === 1800, 'liangshen agent 统计(1650+150)')
-assert.ok(std && std.sessions === 1 && std.tokens === 2800, 'standard agent 统计(2000+800)')
-assert.ok(parsed.byAgent[0].cost >= parsed.byAgent[1].cost, 'agent 按金额降序')
-console.log('✓ 全量账本: totals/byAgent 正确(从 fixture 历史会话计费)')
+assert.equal(parsed.byAgent.length, 1, '1 个数据源(dsh, 其他源已禁用)')
+const dshAgent = parsed.byAgent.find((a) => a.agent === 'dsh')
+assert.ok(dshAgent && dshAgent.sessions === 2 && dshAgent.tokens === 4600 && dshAgent.cost > 0, 'dsh 源统计(2 会话 4600 tokens)')
+console.log('✓ 全量账本: totals/byAgent 正确(按数据源分组, fixture 历史会话计费)')
 
 // ── 配置路由 ────────────────────────────────────────────────────────────────
 const cfgRoute = registered.webServer.find((r) => r.path === '/cost-heatmap/config')

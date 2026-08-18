@@ -13,7 +13,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { buildLedger } from './persistence.js'
+import { buildMultiLedger, buildSources } from './sources.js'
 
 export const name = 'dsh-heatmap-cost'
 
@@ -51,10 +51,21 @@ export const Config = Schema.object({
   dangerThreshold: Schema.number().min(0).default(5),
   /** 热力图覆盖的天数(最大 400) */
   heatmapDays: Schema.number().min(7).max(400).default(365),
-  /** 会话日志根目录(默认 $DSH_HOME/sessions, 扫描全部历史会话) */
+  /** 会话日志根目录(默认 $DSH_HOME/sessions) */
   sessionsRoot: Schema.string().default(''),
   /** 账本缓存文件路径(默认 $DSH_HOME/storages/dsh-heatmap-cost/ledger.json) */
   ledgerFile: Schema.string().default(''),
+  // ── 多 Agent 数据源开关 ──
+  dshEnabled: Schema.boolean().default(true),
+  claudeCodeEnabled: Schema.boolean().default(true),
+  codexEnabled: Schema.boolean().default(true),
+  opencodeEnabled: Schema.boolean().default(true),
+  ompEnabled: Schema.boolean().default(true),
+  // 自定义各源根目录(默认按 HOME 推断)
+  claudeCodeRoot: Schema.string().default(''),
+  codexRoot: Schema.string().default(''),
+  opencodeRoot: Schema.string().default(''),
+  ompRoot: Schema.string().default(''),
 })
 
 /** DeepSeek V4 官方现行定价表 (单位: 每 100 万 tokens, 支持 CNY 与 USD 谷峰费率) */
@@ -87,6 +98,19 @@ export const V4_RATES = {
  * 2. 内置 DeepSeek V4 模型按货币(CNY/USD)与北京时间谷峰费率计算;
  * 3. 其余未知模型回退到 config.defaultPrices。
  */
+/** 已知非 V4 模型单价估算表(CNY, 每 1M token; 用于无真实 cost 的数据源) */
+export const KNOWN_MODEL_PRICES = {
+  'gpt-5.5': { cacheHit: 0.25, cacheMiss: 2.5, output: 10 },
+  'gpt-5.6': { cacheHit: 0.4, cacheMiss: 4, output: 16 },
+  'gpt-5.6-sol': { cacheHit: 0.5, cacheMiss: 5, output: 20 },
+  'gpt-5.6-codex': { cacheHit: 0.4, cacheMiss: 4, output: 16 },
+  'codex-mini-latest': { cacheHit: 0.2, cacheMiss: 2, output: 8 },
+  'claude-fable-5': { cacheHit: 0.3, cacheMiss: 3, output: 15 },
+  'claude-sonnet-4-5': { cacheHit: 0.3, cacheMiss: 3, output: 15 },
+  'claude-opus-4-1': { cacheHit: 1.5, cacheMiss: 15, output: 75 },
+  'k3-agent': { cacheHit: 0.1, cacheMiss: 2, output: 8 },
+}
+
 export const resolveModelPrice = (config, model, timestamp = Date.now()) => {
   const d = new Date(timestamp)
   const hourBJT = (d.getUTCHours() + 8) % 24
@@ -100,11 +124,15 @@ export const resolveModelPrice = (config, model, timestamp = Date.now()) => {
   }
 
   const isV4 = model === 'deepseek-v4-flash' || model === 'deepseek-v4-pro'
-  if (!isV4) return config?.defaultPrices ?? { cacheHit: 0.1, cacheMiss: 1, output: 2 }
+  if (isV4) {
+    const currency = config?.currency?.toUpperCase() === 'USD' ? 'USD' : 'CNY'
+    const table = V4_RATES[currency] ?? V4_RATES.CNY
+    return (isPeak ? table.peak[model] : table.offPeak[model]) ?? config?.defaultPrices
+  }
 
-  const currency = config?.currency?.toUpperCase() === 'USD' ? 'USD' : 'CNY'
-  const table = V4_RATES[currency] ?? V4_RATES.CNY
-  return (isPeak ? table.peak[model] : table.offPeak[model]) ?? config?.defaultPrices
+  const known = KNOWN_MODEL_PRICES[model]
+  if (known) return known
+  return config?.defaultPrices ?? { cacheHit: 0.1, cacheMiss: 1, output: 2 }
 }
 
 /** 归一化 DeepSeek 余额响应中的金额字符串。 */
@@ -381,15 +409,26 @@ export function apply(ctx, config) {
     heatmapDays: config.heatmapDays ?? 365,
     sessionsRoot: config.sessionsRoot !== '' && config.sessionsRoot ? config.sessionsRoot : join(dshHome, 'sessions'),
     ledgerFile: config.ledgerFile !== '' && config.ledgerFile ? config.ledgerFile : join(dshHome, 'storages', 'dsh-heatmap-cost', 'ledger.json'),
+    // 多 Agent 数据源
+    dshEnabled: config.dshEnabled ?? true,
+    claudeCodeEnabled: config.claudeCodeEnabled ?? true,
+    codexEnabled: config.codexEnabled ?? true,
+    opencodeEnabled: config.opencodeEnabled ?? true,
+    ompEnabled: config.ompEnabled ?? true,
+    claudeCodeRoot: config.claudeCodeRoot ?? '',
+    codexRoot: config.codexRoot ?? '',
+    opencodeRoot: config.opencodeRoot ?? '',
+    ompRoot: config.ompRoot ?? '',
   }
   const getConfig = () => runtimeConfig
 
-  // ── 全量历史账本(带 10s TTL 缓存; buildLedger 内部按文件指纹增量) ──────────
+  // ── 多源全量账本(带 10s TTL 缓存; 内部按文件指纹增量) ──────────────────────
   let ledgerCache = { at: 0, result: null }
   const getLedger = () => {
     const now = Date.now()
     if (ledgerCache.result !== null && now - ledgerCache.at < 10000) return ledgerCache.result
-    const result = buildLedger({ ledgerFile: runtimeConfig.ledgerFile, sessionsRoot: runtimeConfig.sessionsRoot, getConfig })
+    const sources = buildSources(runtimeConfig, dshHome)
+    const result = buildMultiLedger({ sources, ledgerFile: runtimeConfig.ledgerFile, getConfig })
     ledgerCache = { at: now, result }
     return result
   }
