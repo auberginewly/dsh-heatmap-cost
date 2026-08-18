@@ -14,7 +14,7 @@ import { z } from 'zod'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { readFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { buildMultiLedger, buildSources } from './sources.js'
 
@@ -430,51 +430,63 @@ export function apply(ctx, config) {
   // 释放, host 进程 RSS 不受影响。host 只读子进程写回的结果文件。
   const emptyLedger = { totals: { tokens: 0, cost: 0, requests: 0, sessions: 0 }, byAgent: [], byModel: [], byDay: [] }
   let ledgerCache = { at: 0, result: null }
+  let scanInflight = null
   const getLedger = async () => {
     const now = Date.now()
     if (ledgerCache.result !== null && now - ledgerCache.at < 10000) return ledgerCache.result
 
     // 1) 读子进程最近写回的结果(10s TTL)
+    let cached = null
     try {
       const f = JSON.parse(readFileSync(runtimeConfig.ledgerFile, 'utf8'))
       if (f !== null && typeof f === 'object' && f.version === 3 && f.result && now - f.scannedAt < 10000) {
-        ledgerCache = { at: now, result: f.result }
-        return f.result
+        cached = f.result
       }
     } catch { /* 无缓存则扫描 */ }
-
-    // 2) spawn 子进程扫描(大文件解析在子进程, 峰值内存随退出释放)
-    const workerPath = fileURLToPath(new URL('./scan-worker.mjs', import.meta.url))
-    const args = [
-      '--ledgerFile', runtimeConfig.ledgerFile,
-      '--sessionsRoot', runtimeConfig.sessionsRoot,
-      '--claudeCodeRoot', runtimeConfig.claudeCodeRoot || '',
-      '--codexRoot', runtimeConfig.codexRoot || '',
-      '--opencodeRoot', runtimeConfig.opencodeRoot || '',
-      '--ompRoot', runtimeConfig.ompRoot || '',
-      '--currency', runtimeConfig.currency,
-      '--dshEnabled', String(runtimeConfig.dshEnabled),
-      '--claudeCodeEnabled', String(runtimeConfig.claudeCodeEnabled),
-      '--codexEnabled', String(runtimeConfig.codexEnabled),
-      '--opencodeEnabled', String(runtimeConfig.opencodeEnabled),
-      '--ompEnabled', String(runtimeConfig.ompEnabled),
-    ]
-    try {
-      const r = spawnSync(process.execPath, [workerPath, ...args], { timeout: 120000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-      if (r.status === 0) {
-        const f = JSON.parse(readFileSync(runtimeConfig.ledgerFile, 'utf8'))
-        if (f?.result) {
-          ledgerCache = { at: Date.now(), result: f.result }
-          return f.result
-        }
-      } else if (r.stderr) {
-        ctx.logger?.warn?.(`[dsh-heatmap-cost] scan worker failed: ${String(r.stderr).slice(0, 300)}`)
-      }
-    } catch (err) {
-      ctx.logger?.warn?.(`[dsh-heatmap-cost] scan spawn error: ${err.message}`)
+    if (cached !== null) {
+      ledgerCache = { at: now, result: cached }
+      return cached
     }
-    ledgerCache = { at: now, result: emptyLedger }
-    return emptyLedger
+
+    // 2) 触发异步子进程扫描(不阻塞主进程, 不继承任何管道)
+    //    大文件解析在子进程, 峰值内存随退出释放; 完成后写 ledger.json。
+    if (scanInflight === null) {
+      const workerPath = fileURLToPath(new URL('./scan-worker.mjs', import.meta.url))
+      const args = [
+        '--ledgerFile', runtimeConfig.ledgerFile,
+        '--sessionsRoot', runtimeConfig.sessionsRoot,
+        '--claudeCodeRoot', runtimeConfig.claudeCodeRoot || '',
+        '--codexRoot', runtimeConfig.codexRoot || '',
+        '--opencodeRoot', runtimeConfig.opencodeRoot || '',
+        '--ompRoot', runtimeConfig.ompRoot || '',
+        '--currency', runtimeConfig.currency,
+        '--dshEnabled', String(runtimeConfig.dshEnabled),
+        '--claudeCodeEnabled', String(runtimeConfig.claudeCodeEnabled),
+        '--codexEnabled', String(runtimeConfig.codexEnabled),
+        '--opencodeEnabled', String(runtimeConfig.opencodeEnabled),
+        '--ompEnabled', String(runtimeConfig.ompEnabled),
+      ]
+      scanInflight = new Promise((resolve) => {
+        const child = spawn(process.execPath, [workerPath, ...args], {
+          detached: true,
+          stdio: 'ignore',
+        })
+        child.on('exit', () => resolve())
+        child.on('error', () => resolve())
+        child.unref()
+        // 兜底: 90 秒后释放 inflight, 避免异常时永远锁死
+        setTimeout(() => resolve(), 90000).unref?.()
+      }).finally(() => { scanInflight = null })
+    }
+
+    // 3) 立即返回现有结果(可能是旧的)或空账本; 下次请求(10s 后)读到新结果
+    let stale = null
+    try {
+      const f = JSON.parse(readFileSync(runtimeConfig.ledgerFile, 'utf8'))
+      if (f?.result) stale = f.result
+    } catch { /* 无 */ }
+    ledgerCache = { at: now, result: stale ?? emptyLedger }
+    return stale ?? emptyLedger
   }
 
   const resolveKey = async () => {
