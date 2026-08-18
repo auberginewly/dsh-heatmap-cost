@@ -1,10 +1,12 @@
 // dsh-heatmap-cost 集成 smoke: 模拟 Cordis host 上下文挂载插件并调用路由。
 // 热力图数据来自 fixture 会话日志(全量历史账本), sessionCost 来自投影 mock。
+// getLedger 走异步扫描: 测试先预生成 v3 结果文件, 让路由读到缓存(不 spawn 子进程)。
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeSessionFile } from './fixtures.mjs'
+import { buildMultiLedger, buildSources } from '../src/sources.js'
 
 const plugin = await import('../src/index.js')
 assert.equal(plugin.name, 'dsh-heatmap-cost')
@@ -79,6 +81,19 @@ plugin.apply(mockCtx, {
   opencodeEnabled: false,
   ompEnabled: false,
 })
+
+// 预生成 v3 结果文件(getLedger 走缓存路径, 不 spawn 子进程)
+{
+  const cfg = {
+    currency: 'CNY', prices: {}, pricesOffPeak: {},
+    defaultPrices: { cacheHit: 0.1, cacheMiss: 1, output: 2 },
+    sessionsRoot: fxDir,
+    claudeCodeEnabled: false, codexEnabled: false, opencodeEnabled: false, ompEnabled: false,
+  }
+  const sources = buildSources(cfg, '/tmp/.dsh')
+  const result = await buildMultiLedger({ sources, ledgerFile: join(fxDir, 'ledger.json'), getConfig: () => cfg })
+  writeFileSync(join(fxDir, 'ledger.json'), JSON.stringify({ version: 3, scannedAt: Date.now(), result, sources: {} }))
+}
 
 // ── 断言挂载 ────────────────────────────────────────────────────────────────
 assert.equal(effects.length >= 1, true, 'effect 已注册(余额循环)')
