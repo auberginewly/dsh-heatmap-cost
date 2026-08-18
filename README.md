@@ -12,10 +12,14 @@ DeepSeek Harness 插件：**Token / 费用消耗热力图**。
 
 ## 特性
 
-- 热力图按事件时间戳聚合**全部会话**的历史用量，跨会话、跨天；`(turn, step)` 去重，不重复计数。
+- **全量历史计费**：扫描 `$DSH_HOME/sessions` 下**所有持久化会话日志**（`session.jsonl.zstd`，zstd 多帧解压），从开始使用 DSH 起累计，跨会话、跨天、跨 Agent 预设。
+- **四维聚合**：累计消耗（总金额 / 总 token / 请求数 / 会话数）+ 按 Agent 预设消耗（standard / liangshen / code…）+ 按模型调用费用 + 按天热力图。
+- **持久化账本**：按会话缓存聚合结果到 `$DSH_HOME/storages/dsh-heatmap-cost/ledger.json`，以文件指纹（size + mtime）增量重扫，重启不丢、秒级返回。
+- **模型筛选**：热力图可按模型着色查看（全部 / 具体模型）。
+- **日历年对齐**：热力图每列 = 一个完整日历周（周日~周六），同周日期不会跨列错位。
 - 内置 DeepSeek V4 定价表（`deepseek-v4-flash` / `deepseek-v4-pro`，CNY / USD，谷峰自动切换：北京时间 09:00~12:00、14:00~18:00 为峰时，其余时段 5 折）。
 - 密钥复用 Harness credentials（`DEEPSEEK_API_KEY`），无需在配置里写密钥。
-- 纯 CSS 网格热力图，自适应明暗主题（CSS 变量），无额外依赖。
+- 纯 CSS 网格热力图，自适应明暗主题（CSS 变量），无额外依赖（Node 内置 zstd）。
 
 ## 安装
 

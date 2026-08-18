@@ -1,10 +1,37 @@
 // dsh-heatmap-cost 集成 smoke: 模拟 Cordis host 上下文挂载插件并调用路由。
+// 热力图数据来自 fixture 会话日志(全量历史账本), sessionCost 来自投影 mock。
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { makeSessionFile } from './fixtures.mjs'
 
 const plugin = await import('../src/index.js')
 assert.equal(plugin.name, 'dsh-heatmap-cost')
 assert.equal(typeof plugin.apply, 'function')
 assert.ok(plugin.Config, 'Config schema 存在')
+
+// ── fixture 会话日志(全量历史) ──────────────────────────────────────────────
+const fxDir = mkdtempSync(join(tmpdir(), 'dsh-hc-int-'))
+const t1 = Date.UTC(2026, 7, 17, 2, 0, 0) // 谷时
+const t2 = Date.UTC(2026, 7, 18, 3, 0, 0) // 峰时
+makeSessionFile(fxDir, 's1', {
+  agentPreset: 'liangshen',
+  createdAt: t1,
+  model: 'deepseek-v4-flash',
+  usages: [
+    { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 100, cacheWriteTokens: 50, time: t1 },
+    { inputTokens: 100, outputTokens: 50, time: t2 },
+  ],
+})
+makeSessionFile(fxDir, 's2', {
+  agentPreset: 'standard',
+  createdAt: t2,
+  model: 'deepseek-v4-pro',
+  usages: [
+    { inputTokens: 2000, outputTokens: 800, time: t2 },
+  ],
+})
 
 // ── mock host ctx ───────────────────────────────────────────────────────────
 const registered = { webServer: [], projections: [] }
@@ -30,20 +57,8 @@ const mockCtx = {
   logger: { warn: () => {} },
 }
 
-// 模拟 sessions: 两个会话, 各带 usage 事件
-const ts1 = Date.UTC(2026, 7, 17, 2, 0, 0) // 谷时
-const ts2 = Date.UTC(2026, 7, 18, 3, 0, 0) // 峰时
-const mkSession = (id, events) => ({ id, header: { id }, events })
-const s1 = mkSession('s1', [
-  { type: 'request/header', data: { header: { config: { model: 'deepseek-v4-flash' } } }, seq: 1, time: ts1 },
-  { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'usage', usage: { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 100, cacheWriteTokens: 50 } } }, seq: 2, time: ts1 },
-])
-const s2 = mkSession('s2', [
-  { type: 'request/header', data: { header: { config: { model: 'deepseek-v4-pro' } } }, seq: 1, time: ts2 },
-  { type: 'assistant/message', data: { turn: 1, step: 0, usage: { inputTokens: 2000, outputTokens: 800 } }, seq: 2, time: ts2 },
-])
-injected.sessions = { list: () => [s1, s2] }
 // 投影快照: 模拟当前会话的投影值
+injected.sessions = { list: () => [{ id: 's1', header: { id: 's1' } }] }
 injected.sessionProjections = {
   snapshot: () => ({
     values: {
@@ -55,7 +70,7 @@ injected.sessionProjections = {
   }),
 }
 
-plugin.apply(mockCtx, { currency: 'CNY' })
+plugin.apply(mockCtx, { currency: 'CNY', sessionsRoot: fxDir, ledgerFile: join(fxDir, 'ledger.json') })
 
 // ── 断言挂载 ────────────────────────────────────────────────────────────────
 assert.equal(effects.length >= 1, true, 'effect 已注册(余额循环)')
@@ -82,8 +97,8 @@ assert.equal(parsed.sessionCost.cost, 0.02)
 assert.ok(parsed.heatmap, 'heatmap 存在')
 assert.ok(parsed.heatmap.series.length >= 365 && parsed.heatmap.series.length <= 371, '序列长度 365~371(对齐周日)')
 assert.equal(new Date(parsed.heatmap.series[0].date + 'T00:00:00').getDay(), 0, '序列从周日开始(列=日历周)')
-assert.equal(parsed.heatmap.summary.total.tokens, 1000 + 500 + 100 + 50 + 2000 + 800, '总 token')
-assert.equal(parsed.heatmap.summary.total.requests, 2, '总请求数')
+assert.equal(parsed.heatmap.summary.total.tokens, 4600, '总 token(全部历史会话)')
+assert.equal(parsed.heatmap.summary.total.requests, 3, '总请求数')
 assert.ok(parsed.heatmap.series.every((d) => typeof d.cost === 'number' && typeof d.tokens === 'number' && Array.isArray(d.modelCosts)), '每格数值类型 + 每天分模型')
 const day17 = parsed.heatmap.series.find((d) => d.date === '2026-08-17')
 const day18 = parsed.heatmap.series.find((d) => d.date === '2026-08-18')
@@ -95,6 +110,21 @@ const idx18 = parsed.heatmap.series.indexOf(day18)
 assert.equal(Math.floor(idx17 / 7), Math.floor(idx18 / 7), '8-17 与 8-18 在同一列(同日历周)')
 assert.ok(day17.modelCosts.every((m) => typeof m.tokens === 'number'), '每天分模型含 tokens')
 assert.ok(parsed.heatmap.modelCosts.length === 2, '分模型成本 2 项')
+
+// ── 全量历史账本断言 ─────────────────────────────────────────────────────────
+assert.ok(parsed.totals, 'totals 存在')
+assert.equal(parsed.totals.sessions, 2, '账本会话数 2')
+assert.equal(parsed.totals.tokens, 4600, '账本总 token')
+assert.equal(parsed.totals.requests, 3, '账本总请求')
+assert.ok(parsed.totals.cost > 0, '账本总金额 > 0')
+assert.ok(Array.isArray(parsed.byAgent), 'byAgent 数组')
+assert.equal(parsed.byAgent.length, 2, '2 个 agent 预设')
+const liang = parsed.byAgent.find((a) => a.agent === 'liangshen')
+const std = parsed.byAgent.find((a) => a.agent === 'standard')
+assert.ok(liang && liang.sessions === 1 && liang.cost > 0 && liang.tokens === 1800, 'liangshen agent 统计(1650+150)')
+assert.ok(std && std.sessions === 1 && std.tokens === 2800, 'standard agent 统计(2000+800)')
+assert.ok(parsed.byAgent[0].cost >= parsed.byAgent[1].cost, 'agent 按金额降序')
+console.log('✓ 全量账本: totals/byAgent 正确(从 fixture 历史会话计费)')
 
 // ── 配置路由 ────────────────────────────────────────────────────────────────
 const cfgRoute = registered.webServer.find((r) => r.path === '/cost-heatmap/config')
@@ -119,4 +149,6 @@ console.log('✓ 挂载: 余额循环 / 2 路由 / 投影单元')
 console.log('✓ /cost-heatmap: 365 天序列, 汇总, 分模型, sessionCost')
 console.log('✓ 谷峰计费区分:', day17.cost.toFixed(6), '<', day18.cost.toFixed(6))
 console.log('✓ /config GET / HEAD / 405')
+
+rmSync(fxDir, { recursive: true, force: true })
 console.log('\n集成测试全部通过 ✅')

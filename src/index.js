@@ -11,6 +11,9 @@
  */
 import Schema from '@deepseek-ai/schemastery'
 import { z } from 'zod'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { buildLedger } from './persistence.js'
 
 export const name = 'dsh-heatmap-cost'
 
@@ -48,6 +51,10 @@ export const Config = Schema.object({
   dangerThreshold: Schema.number().min(0).default(5),
   /** 热力图覆盖的天数(最大 400) */
   heatmapDays: Schema.number().min(7).max(400).default(365),
+  /** 会话日志根目录(默认 $DSH_HOME/sessions, 扫描全部历史会话) */
+  sessionsRoot: Schema.string().default(''),
+  /** 账本缓存文件路径(默认 $DSH_HOME/storages/dsh-heatmap-cost/ledger.json) */
+  ledgerFile: Schema.string().default(''),
 })
 
 /** DeepSeek V4 官方现行定价表 (单位: 每 100 万 tokens, 支持 CNY 与 USD 谷峰费率) */
@@ -358,6 +365,7 @@ const readJsonBody = (req, timeoutMs = 10000) => new Promise((resolve, reject) =
 })
 
 export function apply(ctx, config) {
+  const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
   const runtimeConfig = {
     apiKey: config.apiKey ?? '',
     apiKeyRef: config.apiKeyRef ?? 'DEEPSEEK_API_KEY',
@@ -371,8 +379,20 @@ export function apply(ctx, config) {
     warningThreshold: config.warningThreshold ?? 10,
     dangerThreshold: config.dangerThreshold ?? 5,
     heatmapDays: config.heatmapDays ?? 365,
+    sessionsRoot: config.sessionsRoot !== '' && config.sessionsRoot ? config.sessionsRoot : join(dshHome, 'sessions'),
+    ledgerFile: config.ledgerFile !== '' && config.ledgerFile ? config.ledgerFile : join(dshHome, 'storages', 'dsh-heatmap-cost', 'ledger.json'),
   }
   const getConfig = () => runtimeConfig
+
+  // ── 全量历史账本(带 10s TTL 缓存; buildLedger 内部按文件指纹增量) ──────────
+  let ledgerCache = { at: 0, result: null }
+  const getLedger = () => {
+    const now = Date.now()
+    if (ledgerCache.result !== null && now - ledgerCache.at < 10000) return ledgerCache.result
+    const result = buildLedger({ ledgerFile: runtimeConfig.ledgerFile, sessionsRoot: runtimeConfig.sessionsRoot, getConfig })
+    ledgerCache = { at: now, result }
+    return result
+  }
 
   const resolveKey = async () => {
     if (runtimeConfig.apiKey !== '') return runtimeConfig.apiKey
@@ -561,9 +581,8 @@ export function apply(ctx, config) {
       return { ...base, error: cache.error ?? 'unknown' }
     }
 
-    const serializeHeatmap = (sessionsStore) => {
-      const heat = getHeatmap(sessionsStore)
-      const days = heat.days
+    const serializeHeatmap = (ledger) => {
+      const days = ledger.byDay
       const byDate = new Map(days.map((d) => [d.date, d]))
       const now = Date.now()
       const rangeStart = new Date(now)
@@ -601,13 +620,14 @@ export function apply(ctx, config) {
           last30: sumDays(30),
           last365: sumDays(365),
           total: {
-            tokens: heat.totalTokens,
-            cost: Math.round(heat.totalCost * 1e6) / 1e6,
-            requests: heat.requestCount,
+            tokens: ledger.totals.tokens,
+            cost: Math.round(ledger.totals.cost * 1e6) / 1e6,
+            requests: ledger.totals.requests,
+            sessions: ledger.totals.sessions,
           },
         },
         maxCost,
-        modelCosts: heat.modelCosts,
+        modelCosts: ledger.byModel,
         currency: runtimeConfig.currency,
         heatmapDays: runtimeConfig.heatmapDays,
       }
@@ -648,11 +668,25 @@ export function apply(ctx, config) {
             }
           } catch { /* 投影读取失败不阻塞主响应 */ }
         }
+        const ledger = getLedger()
         sendJson(res, 200, {
           ok: true,
           balance: serializeBalance(),
           sessionCost,
-          heatmap: sessionsStore !== undefined ? serializeHeatmap(sessionsStore) : null,
+          totals: {
+            tokens: ledger.totals.tokens,
+            cost: Math.round(ledger.totals.cost * 1e6) / 1e6,
+            requests: ledger.totals.requests,
+            sessions: ledger.totals.sessions,
+          },
+          byAgent: ledger.byAgent.map((a) => ({
+            agent: a.agent,
+            tokens: a.tokens,
+            cost: Math.round(a.cost * 1e6) / 1e6,
+            requests: a.requests,
+            sessions: a.sessions,
+          })),
+          heatmap: serializeHeatmap(ledger),
           prices: {
             'deepseek-v4-flash': resolveModelPrice(getConfig(), 'deepseek-v4-flash'),
             'deepseek-v4-pro': resolveModelPrice(getConfig(), 'deepseek-v4-pro'),

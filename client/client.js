@@ -75,6 +75,20 @@ window.__ModuleLoader__.load({
 				".dshhc_filter_btn{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:999px;font-size:10.5px;line-height:14px;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,0.2));background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-family:inherit;transition:all .12s ease;white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis}",
 				".dshhc_filter_btn:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1,rgba(128,128,128,0.4))}",
 				".dshhc_filter_btn_active{background:var(--dsw-alias-brand-primary,#3b82f6);border-color:var(--dsw-alias-brand-primary,#3b82f6);color:var(--dsw-alias-label-primary-foreground,#fff);font-weight:600}",
+				/* totals */
+				".dshhc_totals{display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.04));border:1px solid var(--dsw-alias-border-l3,rgba(128,128,128,0.12));border-radius:8px;padding:10px 14px;flex-wrap:wrap}",
+				".dshhc_totals_main{display:flex;align-items:baseline;gap:8px;min-width:0}",
+				".dshhc_totals_label{font-size:11px;color:var(--dsw-alias-label-tertiary)}",
+				".dshhc_totals_amount{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}",
+				".dshhc_totals_sub{font-size:11px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;display:flex;gap:10px;flex-wrap:wrap}",
+				/* agent list */
+				".dshhc_agents{display:flex;flex-direction:column;gap:4px}",
+				".dshhc_agent_row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;gap:8px}",
+				".dshhc_agent_name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}",
+				".dshhc_agent_badge{display:inline-flex;padding:0 7px;border-radius:999px;background:rgba(59,130,246,0.12);color:var(--dsw-alias-brand-primary,#3b82f6);font-size:10px;line-height:16px;font-weight:500;flex-shrink:0}",
+				".dshhc_agent_vals{display:flex;gap:12px;align-items:baseline;flex-shrink:0}",
+				".dshhc_agent_amt{font-weight:600;color:var(--dsw-alias-label-primary)}",
+				".dshhc_agent_sub{font-size:10px;color:var(--dsw-alias-label-tertiary)}",
 				".dshhc_cell{position:absolute;width:10px;height:10px;border-radius:2px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.08));transition:transform .08s ease;cursor:default}",
 				".dshhc_cell:hover{transform:scale(1.35);outline:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,0.4));outline-offset:1px}",
 				".dshhc_lv1{background:rgba(22,163,74,0.28)}",
@@ -337,6 +351,42 @@ window.__ModuleLoader__.load({
 				? bal.balances.find((b) => b.currency === bal.currency) ?? bal.balances[0]
 				: null;
 			const cur = bal?.currency ?? heat?.currency ?? "CNY";
+			const totals = payload?.totals;
+
+			// 总消耗(全部历史会话, 从开始使用起计费)
+			let totalsNode = null;
+			if (totals && (totals.cost > 0 || totals.tokens > 0)) {
+				totalsNode = react.createElement("div", { className: "dshhc_totals" }, [
+					react.createElement("div", { className: "dshhc_totals_main", key: "m" }, [
+						react.createElement("span", { className: "dshhc_totals_label", key: "l" }, "累计消耗"),
+						react.createElement("span", { className: "dshhc_totals_amount", key: "a" }, formatMoney(totals.cost, cur))
+					]),
+					react.createElement("div", { className: "dshhc_totals_sub", key: "s" }, [
+						react.createElement("span", { key: "t" }, formatTokens(totals.tokens) + " tokens"),
+						react.createElement("span", { key: "r" }, totals.requests + " 次请求"),
+						react.createElement("span", { key: "c" }, totals.sessions + " 个会话")
+					])
+				]);
+			}
+
+			// 按 agent 预设消耗
+			let agentsNode = null;
+			const agents = payload?.byAgent || [];
+			if (agents.length > 0) {
+				agentsNode = react.createElement("div", { className: "dshhc_agents" }, [
+					react.createElement("div", { className: "dshhc_hm_title", key: "t" }, "按 Agent 消耗"),
+					...agents.map((a) => react.createElement("div", { className: "dshhc_agent_row", key: a.agent }, [
+						react.createElement("span", { className: "dshhc_agent_name", key: "n" }, [
+							react.createElement("span", { className: "dshhc_agent_badge", key: "b" }, a.agent),
+							react.createElement("span", { key: "s", style: { color: "var(--dsw-alias-label-tertiary)" } }, a.sessions + " 会话")
+						]),
+						react.createElement("span", { className: "dshhc_agent_vals", key: "v" }, [
+							react.createElement("span", { className: "dshhc_agent_amt", key: "a" }, formatMoney(a.cost, cur)),
+							react.createElement("span", { className: "dshhc_agent_sub", key: "t" }, formatTokens(a.tokens) + " tok")
+						])
+					]))
+				]);
+			}
 
 			let balNode = null;
 			if (primary !== null) {
@@ -418,8 +468,10 @@ window.__ModuleLoader__.load({
 						react.createElement("button", { type: "button", className: "dshhc_modal_close", onClick: onClose, key: "c" }, "✕")
 					]),
 					react.createElement("div", { className: "dshhc_modal_body", key: "b" }, [
+						totalsNode,
 						balNode,
 						sessionNode,
+						agentsNode,
 						summaryNode,
 						heat ? react.createElement(HeatmapGrid, { series: heat.series, maxCost: heat.maxCost, currency: cur, models: (heat.modelCosts || []).map((m) => m.model), key: "hm" }) : null,
 						modelsNode
