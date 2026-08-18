@@ -52,6 +52,8 @@ assert.equal(agg.days[0].requests, 2)
 assert.equal(agg.days[0].tokens, 200 + 10 + 20 + 60 + 300 + 100, 'token total')
 assert.ok(agg.days[0].cost > 0)
 assert.equal(agg.days[0].date, dayKey(ts))
+assert.ok(Array.isArray(agg.days[0].modelCosts) && agg.days[0].modelCosts.length === 2, 'day-level model costs')
+assert.equal(agg.days[0].modelCosts[0].model, 'deepseek-v4-pro', 'day model costs sorted by cost desc')
 console.log('✓ 日聚合', agg.days[0])
 
 // 5. 当前会话投影单元

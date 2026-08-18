@@ -187,7 +187,7 @@ export const aggregateByDay = (byStep, getConfig) => {
     const key = dayKey(time)
     let bucket = days.get(key)
     if (bucket === undefined) {
-      bucket = { date: key, tokens: 0, cost: 0, requests: 0 }
+      bucket = { date: key, tokens: 0, cost: 0, requests: 0, modelCosts: {} }
       days.set(key, bucket)
     }
     const price = resolveModelPrice(getConfig(), model, time)
@@ -196,12 +196,16 @@ export const aggregateByDay = (byStep, getConfig) => {
     bucket.tokens += tokens
     bucket.cost += cost
     bucket.requests += 1
+    bucket.modelCosts[model] = (bucket.modelCosts[model] ?? 0) + cost
     totalTokens += tokens
     totalCost += cost
     modelTotals.set(model, (modelTotals.get(model) ?? 0) + cost)
   }
   return {
-    days: [...days.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
+    days: [...days.values()].map((d) => ({
+      ...d,
+      modelCosts: Object.entries(d.modelCosts).map(([model, cost]) => ({ model, cost })).sort((a, b) => b.cost - a.cost),
+    })).sort((a, b) => (a.date < b.date ? -1 : 1)),
     totalTokens,
     totalCost,
     modelCosts: [...modelTotals.entries()].map(([model, cost]) => ({ model, cost })),
@@ -463,7 +467,7 @@ export function apply(ctx, config) {
         const key = dayKey(time)
         let bucket = days.get(key)
         if (bucket === undefined) {
-          bucket = { date: key, tokens: 0, cost: 0, requests: 0 }
+          bucket = { date: key, tokens: 0, cost: 0, requests: 0, modelCosts: {} }
           days.set(key, bucket)
         }
         const cost = costOfBuckets(buckets, resolveModelPrice(getConfig(), model, time))
@@ -471,6 +475,7 @@ export function apply(ctx, config) {
         bucket.tokens += tokens
         bucket.cost += cost
         bucket.requests += 1
+        bucket.modelCosts[model] = (bucket.modelCosts[model] ?? 0) + cost
         totalTokens += tokens
         totalCost += cost
         requestCount += 1
@@ -479,7 +484,10 @@ export function apply(ctx, config) {
     }
 
     return {
-      days: [...days.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
+      days: [...days.values()].map((d) => ({
+        ...d,
+        modelCosts: Object.entries(d.modelCosts).map(([model, cost]) => ({ model, cost })).sort((a, b) => b.cost - a.cost),
+      })).sort((a, b) => (a.date < b.date ? -1 : 1)),
       totalTokens,
       totalCost,
       requestCount,
@@ -565,7 +573,7 @@ export function apply(ctx, config) {
         const d = new Date(rangeStart.getTime() + i * 86400000)
         const key = dayKey(d.getTime())
         const hit = byDate.get(key)
-        series.push(hit ?? { date: key, tokens: 0, cost: 0, requests: 0 })
+        series.push(hit ?? { date: key, tokens: 0, cost: 0, requests: 0, modelCosts: [] })
       }
 
       const sumDays = (n) => {

@@ -70,14 +70,23 @@ window.__ModuleLoader__.load({
 				".dshhc_hm_scroll::-webkit-scrollbar-track{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.06));border-radius:4px}",
 				".dshhc_hm_scroll::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2,rgba(128,128,128,0.3));border-radius:4px}",
 				".dshhc_hm_scroll::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-border-l1,rgba(128,128,128,0.5))}",
-				".dshhc_cell{position:absolute;width:10px;height:10px;border-radius:2px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.08));transition:transform .08s ease}",
+				".dshhc_cell{position:absolute;width:10px;height:10px;border-radius:2px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.08));transition:transform .08s ease,outline-color .08s ease;cursor:pointer}",
 				".dshhc_cell:hover{transform:scale(1.35);outline:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,0.4));outline-offset:1px}",
+				".dshhc_cell_selected{transform:scale(1.35);outline:2px solid var(--dsw-alias-brand-primary,#3b82f6);outline-offset:1px}",
 				".dshhc_lv1{background:rgba(22,163,74,0.28)}",
 				".dshhc_lv2{background:rgba(22,163,74,0.55)}",
 				".dshhc_lv3{background:rgba(22,163,74,0.78)}",
 				".dshhc_lv4{background:rgba(16,185,129,1)}",
 				".dshhc_lv0{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.08))}",
-				".dshhc_month{position:absolute;font-size:9px;color:var(--dsw-alias-label-tertiary);pointer-events:none}",
+				".dshhc_month{position:absolute;font-size:9px;color:var(--dsw-alias-label-tertiary);pointer-events:none;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-layer-1,#fff));padding:0 2px;border-radius:3px;z-index:2;white-space:nowrap}",
+				".dshhc_tooltip{position:absolute;z-index:5;pointer-events:none;background:var(--dsw-alias-bg-layer-1,var(--dsw-hovercard-bg,#1f1f1f));border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,0.25));border-radius:6px;box-shadow:var(--dsw-shadow-lv2,0 4px 14px rgba(0,0,0,0.25));padding:6px 9px;font-size:11px;line-height:1.5;white-space:nowrap;color:var(--dsw-alias-label-primary)}",
+				".dshhc_day_detail{display:flex;flex-direction:column;gap:6px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.04));border:1px solid var(--dsw-alias-border-l3,rgba(128,128,128,0.12));border-radius:8px;padding:8px 12px}",
+				".dshhc_day_detail_head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}",
+				".dshhc_day_detail_date{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}",
+				".dshhc_day_detail_close{background:transparent;border:none;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:13px;line-height:1;padding:2px 5px;border-radius:4px}",
+				".dshhc_day_detail_close:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.1))}",
+				".dshhc_day_detail_stats{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}",
+				".dshhc_day_detail_models{display:flex;gap:8px;flex-wrap:wrap;font-size:10.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}",
 				/* model costs */
 				".dshhc_models{display:flex;flex-direction:column;gap:4px}",
 				".dshhc_model_row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}",
@@ -191,9 +200,12 @@ window.__ModuleLoader__.load({
 		//#region heatmap grid
 		/**
 		 * GitHub 风格热力图: 每格一天, 按周分列, 颜色按当日金额 5 级分级。
-		 * series 为按日期升序的 {date, tokens, cost, requests} 数组。
+		 * series 为按日期升序的 {date, tokens, cost, requests, modelCosts} 数组。
+		 * 悬停显示当日详情, 点击选中固定显示(再点或点 ✕ 关闭)。
 		 */
 		function HeatmapGrid({ series, maxCost, currency }) {
+			const [selected, setSelected] = react.useState(null);
+			const [hovered, setHovered] = react.useState(null);
 			if (!series || series.length === 0) {
 				return react.createElement("div", { className: "dshhc_models_empty" }, "暂无数据");
 			}
@@ -222,21 +234,72 @@ window.__ModuleLoader__.load({
 					level = cost < maxCost * 0.25 ? 1 : cost < maxCost * 0.5 ? 2 : cost < maxCost * 0.75 ? 3 : 4;
 				}
 				const tokens = series[i].tokens;
-				const title = `${series[i].date} · ${formatMoney(cost, currency)} · ${formatTokens(tokens)} tokens${series[i].requests ? " · " + series[i].requests + " 次请求" : ""}`;
+				const info = {
+					date: series[i].date,
+					cost,
+					tokens,
+					requests: series[i].requests || 0,
+					modelCosts: series[i].modelCosts || [],
+				};
+				const isSel = selected !== null && selected.date === info.date;
 				cells.push(react.createElement("div", {
 					key: series[i].date,
-					className: "dshhc_cell dshhc_lv" + level,
-					title,
-					style: { left: col * CELL, top: MONTH_H + wd * CELL }
+					className: "dshhc_cell dshhc_lv" + level + (isSel ? " dshhc_cell_selected" : ""),
+					title: series[i].date,
+					style: { left: col * CELL, top: MONTH_H + wd * CELL },
+					onClick: () => setSelected(isSel ? null : info),
+					onMouseEnter: () => setHovered({ ...info, left: col * CELL, top: MONTH_H + wd * CELL }),
+					onMouseLeave: () => setHovered(null)
 				}));
 			}
+
+			// 选中天详情卡
+			let detailNode = null;
+			if (selected !== null) {
+				const dayModels = selected.modelCosts && selected.modelCosts.length > 0
+					? selected.modelCosts.map((m) =>
+						react.createElement("span", { key: m.model }, m.model + " " + formatMoney(m.cost, currency)))
+					: null;
+				detailNode = react.createElement("div", { className: "dshhc_day_detail", key: "detail" }, [
+					react.createElement("div", { className: "dshhc_day_detail_head", key: "h" }, [
+						react.createElement("span", { className: "dshhc_day_detail_date", key: "d" },
+							selected.date + " · " + formatMoney(selected.cost, currency)),
+						react.createElement("button", {
+							type: "button",
+							className: "dshhc_day_detail_close",
+							onClick: () => setSelected(null),
+							key: "c"
+						}, "✕")
+					]),
+					react.createElement("div", { className: "dshhc_day_detail_stats", key: "s" }, [
+						react.createElement("span", { key: "t" }, "tokens " + formatTokens(selected.tokens)),
+						react.createElement("span", { key: "r" }, "请求 " + selected.requests),
+						selected.cost > 0 ? react.createElement("span", { key: "a" }, "日均占比 " + (maxCost > 0 ? Math.round((selected.cost / maxCost) * 100) : 0) + "%") : null
+					]),
+					dayModels ? react.createElement("div", { className: "dshhc_day_detail_models", key: "m" }, dayModels) : null
+				]);
+			}
+
+			// hover 提示
+			let tooltipNode = null;
+			if (hovered !== null) {
+				tooltipNode = react.createElement("div", {
+					className: "dshhc_tooltip",
+					style: { left: hovered.left + 5, top: hovered.top + CELL + 4 }
+				}, [
+					hovered.date + " · " + formatMoney(hovered.cost, currency) + " · " + formatTokens(hovered.tokens) + " tokens" +
+					(hovered.requests ? " · " + hovered.requests + " 次" : "")
+				]);
+			}
+
 			return react.createElement("div", { className: "dshhc_hmwrap" }, [
 				react.createElement("div", { className: "dshhc_hm_title", key: "t" }, [
-					react.createElement("span", { key: "lbl" }, "每日消耗" + (series.length > 200 ? "（可左右滑动）" : "")),
+					react.createElement("span", { key: "lbl" }, "每日消耗" + (series.length > 200 ? "（可左右滑动，点格看详情）" : "（点格看详情）")),
 					react.createElement("span", { className: "dshhc_hm_legend", key: "leg" }, ["少", ...Array.from({ length: 5 }, (_, i) =>
-						react.createElement("span", { key: "l" + i, className: "dshhc_cell dshhc_lv" + i, style: { position: "static", display: "inline-block", marginLeft: 2 } })
+						react.createElement("span", { key: "l" + i, className: "dshhc_cell dshhc_lv" + i, style: { position: "static", display: "inline-block", marginLeft: 2, cursor: "default" } })
 					), "多"])
 				]),
+				detailNode,
 				react.createElement("div", { className: "dshhc_hm_scroll", key: "sc" }, [
 					react.createElement("div", {
 						className: "dshhc_hm_canvas",
@@ -244,7 +307,8 @@ window.__ModuleLoader__.load({
 						style: { width: COLS * CELL + 2, height: MONTH_H + 7 * CELL }
 					}, [
 						...monthLabels,
-						...cells
+						...cells,
+						tooltipNode
 					])
 				])
 			]);
