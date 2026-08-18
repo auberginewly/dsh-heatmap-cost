@@ -3,6 +3,9 @@
   "version": "0.3.0",
   "description": "Token/费用热力图插件：在 dsh Web UI 输入框下方统计条实时显示 DeepSeek 余额与本会话消耗，点击展开 GitHub 风格的热力图（近 365 天每日 token / 金额）",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.5"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/auberginewly/dsh-heatmap-cost.git"
