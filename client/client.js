@@ -70,6 +70,11 @@ window.__ModuleLoader__.load({
 				".dshhc_hm_scroll::-webkit-scrollbar-track{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.06));border-radius:4px}",
 				".dshhc_hm_scroll::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2,rgba(128,128,128,0.3));border-radius:4px}",
 				".dshhc_hm_scroll::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-border-l1,rgba(128,128,128,0.5))}",
+				".dshhc_filter{display:flex;gap:4px;flex-wrap:wrap;align-items:center}",
+				".dshhc_filter_label{font-size:10.5px;color:var(--dsw-alias-label-tertiary);margin-right:2px}",
+				".dshhc_filter_btn{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:999px;font-size:10.5px;line-height:14px;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,0.2));background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-family:inherit;transition:all .12s ease;white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis}",
+				".dshhc_filter_btn:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1,rgba(128,128,128,0.4))}",
+				".dshhc_filter_btn_active{background:var(--dsw-alias-brand-primary,#3b82f6);border-color:var(--dsw-alias-brand-primary,#3b82f6);color:var(--dsw-alias-label-primary-foreground,#fff);font-weight:600}",
 				".dshhc_cell{position:absolute;width:10px;height:10px;border-radius:2px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,0.08));transition:transform .08s ease;cursor:default}",
 				".dshhc_cell:hover{transform:scale(1.35);outline:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,0.4));outline-offset:1px}",
 				".dshhc_lv1{background:rgba(22,163,74,0.28)}",
@@ -192,10 +197,12 @@ window.__ModuleLoader__.load({
 		//#region heatmap grid
 		/**
 		 * GitHub 风格热力图: 每格一天, 按周分列, 颜色按当日金额 5 级分级。
-		 * series 为按日期升序的 {date, tokens, cost, requests, modelCosts} 数组。
+		 * series 为按日期升序的 {date, tokens, cost, requests, modelCosts[]} 数组,
+		 * modelCosts 为 {model, cost, tokens} 列表 —— 支持按模型筛选着色。
 		 * 悬停用 fixed 定位的 tooltip 显示当日详情(不受滚动容器裁剪)。
 		 */
-		function HeatmapGrid({ series, maxCost, currency }) {
+		function HeatmapGrid({ series, maxCost, currency, models }) {
+			const [filter, setFilter] = react.useState("all");
 			const [hovered, setHovered] = react.useState(null);
 			if (!series || series.length === 0) {
 				return react.createElement("div", { className: "dshhc_models_empty" }, "暂无数据");
@@ -206,6 +213,17 @@ window.__ModuleLoader__.load({
 			const cells = [];
 			const monthLabels = [];
 			let prevMonth = null;
+
+			// 按筛选计算每日金额/tokens: 'all' 用每日总计, 否则取该模型当天的 {cost,tokens}
+			const dayOf = (item) => {
+				if (filter === "all") return { cost: item.cost, tokens: item.tokens };
+				const hit = (item.modelCosts || []).find((m) => m.model === filter);
+				return hit ? { cost: hit.cost, tokens: hit.tokens } : { cost: 0, tokens: 0 };
+			};
+			// 筛选后的最大日金额(用于 5 级配色)
+			let maxEff = 0.000001;
+			for (const s of series) { const c = dayOf(s).cost; if (c > maxEff) maxEff = c; }
+
 			for (let i = 0; i < series.length; i++) {
 				const d = new Date(series[i].date + "T00:00:00");
 				const wd = d.getDay(); // 0=Sun
@@ -219,12 +237,11 @@ window.__ModuleLoader__.load({
 					}, month));
 					prevMonth = month;
 				}
-				const cost = series[i].cost;
+				const { cost, tokens } = dayOf(series[i]);
 				let level = 0;
 				if (cost > 0) {
-					level = cost < maxCost * 0.25 ? 1 : cost < maxCost * 0.5 ? 2 : cost < maxCost * 0.75 ? 3 : 4;
+					level = cost < maxEff * 0.25 ? 1 : cost < maxEff * 0.5 ? 2 : cost < maxEff * 0.75 ? 3 : 4;
 				}
-				const tokens = series[i].tokens;
 				const info = {
 					date: series[i].date,
 					cost,
@@ -259,13 +276,35 @@ window.__ModuleLoader__.load({
 				]);
 			}
 
+			// 模型筛选胶囊
+			const filterBtns = [react.createElement("button", {
+				type: "button",
+				key: "all",
+				className: "dshhc_filter_btn" + (filter === "all" ? " dshhc_filter_btn_active" : ""),
+				onClick: () => setFilter("all")
+			}, "全部")];
+			for (const m of models || []) {
+				filterBtns.push(react.createElement("button", {
+					type: "button",
+					key: m,
+					className: "dshhc_filter_btn" + (filter === m ? " dshhc_filter_btn_active" : ""),
+					onClick: () => setFilter(filter === m ? "all" : m),
+					title: m
+				}, m));
+			}
+			const filterNode = react.createElement("div", { className: "dshhc_filter", key: "f" }, [
+				react.createElement("span", { className: "dshhc_filter_label", key: "l" }, "模型:"),
+				...filterBtns
+			]);
+
 			return react.createElement("div", { className: "dshhc_hmwrap" }, [
 				react.createElement("div", { className: "dshhc_hm_title", key: "t" }, [
-					react.createElement("span", { key: "lbl" }, "每日消耗" + (series.length > 200 ? "（可左右滑动）" : "")),
+					react.createElement("span", { key: "lbl" }, "每日消耗" + (filter !== "all" ? " · " + filter : "") + (series.length > 200 ? "（可左右滑动）" : "")),
 					react.createElement("span", { className: "dshhc_hm_legend", key: "leg" }, ["少", ...Array.from({ length: 5 }, (_, i) =>
 						react.createElement("span", { key: "l" + i, className: "dshhc_cell dshhc_lv" + i, style: { position: "static", display: "inline-block", marginLeft: 2, cursor: "default" } })
 					), "多"])
 				]),
+				filterNode,
 				react.createElement("div", { className: "dshhc_hm_scroll", key: "sc" }, [
 					react.createElement("div", {
 						className: "dshhc_hm_canvas",
@@ -382,7 +421,7 @@ window.__ModuleLoader__.load({
 						balNode,
 						sessionNode,
 						summaryNode,
-						heat ? react.createElement(HeatmapGrid, { series: heat.series, maxCost: heat.maxCost, currency: cur, key: "hm" }) : null,
+						heat ? react.createElement(HeatmapGrid, { series: heat.series, maxCost: heat.maxCost, currency: cur, models: (heat.modelCosts || []).map((m) => m.model), key: "hm" }) : null,
 						modelsNode
 					])
 				])

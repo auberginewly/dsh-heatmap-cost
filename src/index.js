@@ -196,7 +196,8 @@ export const aggregateByDay = (byStep, getConfig) => {
     bucket.tokens += tokens
     bucket.cost += cost
     bucket.requests += 1
-    bucket.modelCosts[model] = (bucket.modelCosts[model] ?? 0) + cost
+    const prevModel = bucket.modelCosts[model] ?? { cost: 0, tokens: 0 }
+    bucket.modelCosts[model] = { cost: prevModel.cost + cost, tokens: prevModel.tokens + tokens }
     totalTokens += tokens
     totalCost += cost
     modelTotals.set(model, (modelTotals.get(model) ?? 0) + cost)
@@ -204,7 +205,7 @@ export const aggregateByDay = (byStep, getConfig) => {
   return {
     days: [...days.values()].map((d) => ({
       ...d,
-      modelCosts: Object.entries(d.modelCosts).map(([model, cost]) => ({ model, cost })).sort((a, b) => b.cost - a.cost),
+      modelCosts: Object.entries(d.modelCosts).map(([model, v]) => ({ model, cost: v.cost, tokens: v.tokens })).sort((a, b) => b.cost - a.cost),
     })).sort((a, b) => (a.date < b.date ? -1 : 1)),
     totalTokens,
     totalCost,
@@ -475,7 +476,8 @@ export function apply(ctx, config) {
         bucket.tokens += tokens
         bucket.cost += cost
         bucket.requests += 1
-        bucket.modelCosts[model] = (bucket.modelCosts[model] ?? 0) + cost
+        const prevModel = bucket.modelCosts[model] ?? { cost: 0, tokens: 0 }
+        bucket.modelCosts[model] = { cost: prevModel.cost + cost, tokens: prevModel.tokens + tokens }
         totalTokens += tokens
         totalCost += cost
         requestCount += 1
@@ -486,7 +488,7 @@ export function apply(ctx, config) {
     return {
       days: [...days.values()].map((d) => ({
         ...d,
-        modelCosts: Object.entries(d.modelCosts).map(([model, cost]) => ({ model, cost })).sort((a, b) => b.cost - a.cost),
+        modelCosts: Object.entries(d.modelCosts).map(([model, v]) => ({ model, cost: v.cost, tokens: v.tokens })).sort((a, b) => b.cost - a.cost),
       })).sort((a, b) => (a.date < b.date ? -1 : 1)),
       totalTokens,
       totalCost,
@@ -569,8 +571,13 @@ export function apply(ctx, config) {
       rangeStart.setHours(0, 0, 0, 0)
 
       const series = []
-      for (let i = 0; i < runtimeConfig.heatmapDays; i++) {
-        const d = new Date(rangeStart.getTime() + i * 86400000)
+      // 对齐到所在周的周日: 每列 = 一个完整日历周(周日~周六), 避免 8.16/8.17/8.18 跨列错位。
+      const startDay = new Date(rangeStart)
+      startDay.setDate(startDay.getDate() - startDay.getDay())
+      startDay.setHours(0, 0, 0, 0)
+      const todayStart = new Date(now)
+      todayStart.setHours(0, 0, 0, 0)
+      for (let d = new Date(startDay); d.getTime() <= todayStart.getTime(); d.setDate(d.getDate() + 1)) {
         const key = dayKey(d.getTime())
         const hit = byDate.get(key)
         series.push(hit ?? { date: key, tokens: 0, cost: 0, requests: 0, modelCosts: [] })
