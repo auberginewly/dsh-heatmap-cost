@@ -1,0 +1,17 @@
+# dsh-heatmap-cost bundle 层: 一个插件行。
+# 安装: dsh plugin --profile <web|desktop> add <本目录>
+# 覆盖配置示例(写进 $DSH_HOME/profiles/<profile>/cordis.patch.yml):
+#   - id: dsh-heatmap-cost
+#     config:
+#       warningThreshold: 10      # 余额预警阈值(低于此值显示黄色)
+#       dangerThreshold: 5        # 余额告急阈值(低于此值显示红色)
+#       refreshIntervalMs: 300000 # 服务器向 DeepSeek 查询余额的频率(毫秒)
+#       heatmapDays: 365          # 热力图覆盖的天数
+- insert:
+    - id: dsh-heatmap-cost
+      name: dsh-heatmap-cost
+      config:
+        warningThreshold: 10
+        dangerThreshold: 5
+        refreshIntervalMs: 300000
+        heatmapDays: 365
