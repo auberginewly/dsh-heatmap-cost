@@ -13,6 +13,9 @@ import Schema from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { buildMultiLedger, buildSources } from './sources.js'
 
 export const name = 'dsh-heatmap-cost'
@@ -422,15 +425,56 @@ export function apply(ctx, config) {
   }
   const getConfig = () => runtimeConfig
 
-  // ── 多源全量账本(带 10s TTL 缓存; 内部按文件指纹增量) ──────────────────────
+  // ── 多源全量账本 ───────────────────────────────────────────────────────────
+  // 扫描在独立子进程(scan-worker.mjs)里执行: 大文件解析的瞬时堆随子进程退出
+  // 释放, host 进程 RSS 不受影响。host 只读子进程写回的结果文件。
+  const emptyLedger = { totals: { tokens: 0, cost: 0, requests: 0, sessions: 0 }, byAgent: [], byModel: [], byDay: [] }
   let ledgerCache = { at: 0, result: null }
-  const getLedger = () => {
+  const getLedger = async () => {
     const now = Date.now()
     if (ledgerCache.result !== null && now - ledgerCache.at < 10000) return ledgerCache.result
-    const sources = buildSources(runtimeConfig, dshHome)
-    const result = buildMultiLedger({ sources, ledgerFile: runtimeConfig.ledgerFile, getConfig })
-    ledgerCache = { at: now, result }
-    return result
+
+    // 1) 读子进程最近写回的结果(10s TTL)
+    try {
+      const f = JSON.parse(readFileSync(runtimeConfig.ledgerFile, 'utf8'))
+      if (f !== null && typeof f === 'object' && f.version === 3 && f.result && now - f.scannedAt < 10000) {
+        ledgerCache = { at: now, result: f.result }
+        return f.result
+      }
+    } catch { /* 无缓存则扫描 */ }
+
+    // 2) spawn 子进程扫描(大文件解析在子进程, 峰值内存随退出释放)
+    const workerPath = fileURLToPath(new URL('./scan-worker.mjs', import.meta.url))
+    const args = [
+      '--ledgerFile', runtimeConfig.ledgerFile,
+      '--sessionsRoot', runtimeConfig.sessionsRoot,
+      '--claudeCodeRoot', runtimeConfig.claudeCodeRoot || '',
+      '--codexRoot', runtimeConfig.codexRoot || '',
+      '--opencodeRoot', runtimeConfig.opencodeRoot || '',
+      '--ompRoot', runtimeConfig.ompRoot || '',
+      '--currency', runtimeConfig.currency,
+      '--dshEnabled', String(runtimeConfig.dshEnabled),
+      '--claudeCodeEnabled', String(runtimeConfig.claudeCodeEnabled),
+      '--codexEnabled', String(runtimeConfig.codexEnabled),
+      '--opencodeEnabled', String(runtimeConfig.opencodeEnabled),
+      '--ompEnabled', String(runtimeConfig.ompEnabled),
+    ]
+    try {
+      const r = spawnSync(process.execPath, [workerPath, ...args], { timeout: 120000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      if (r.status === 0) {
+        const f = JSON.parse(readFileSync(runtimeConfig.ledgerFile, 'utf8'))
+        if (f?.result) {
+          ledgerCache = { at: Date.now(), result: f.result }
+          return f.result
+        }
+      } else if (r.stderr) {
+        ctx.logger?.warn?.(`[dsh-heatmap-cost] scan worker failed: ${String(r.stderr).slice(0, 300)}`)
+      }
+    } catch (err) {
+      ctx.logger?.warn?.(`[dsh-heatmap-cost] scan spawn error: ${err.message}`)
+    }
+    ledgerCache = { at: now, result: emptyLedger }
+    return emptyLedger
   }
 
   const resolveKey = async () => {
@@ -707,7 +751,7 @@ export function apply(ctx, config) {
             }
           } catch { /* 投影读取失败不阻塞主响应 */ }
         }
-        const ledger = getLedger()
+        const ledger = await getLedger()
         sendJson(res, 200, {
           ok: true,
           balance: serializeBalance(),
